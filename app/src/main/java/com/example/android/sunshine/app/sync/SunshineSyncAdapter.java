@@ -27,35 +27,33 @@ import com.example.android.sunshine.app.MainActivity;
 import com.example.android.sunshine.app.R;
 import com.example.android.sunshine.app.Utility;
 import com.example.android.sunshine.app.data.WeatherContract;
-import com.example.android.sunshine.app.data.WeatherContract.WeatherEntry;
 import com.example.android.sunshine.app.data.WeatherContract.LocationEntry;
-
+import com.example.android.sunshine.app.data.WeatherContract.WeatherEntry;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Vector;
+
+import retrofit.RestAdapter;
+import retrofit.client.Response;
+import retrofit.mime.TypedByteArray;
+import retrofit.mime.TypedInput;
 
 public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
     public final String LOG_TAG = SunshineSyncAdapter.class.getSimpleName();
     // Interval at which to sync with the weather, in milliseconds.
     // 60 seconds (1 minute) * 180 = 3 hours
     public static final int SYNC_INTERVAL = 60 * 180;
-    public static final int SYNC_FLEXTIME = SYNC_INTERVAL/3;
+    public static final int SYNC_FLEXTIME = SYNC_INTERVAL / 3;
     private static final long DAY_IN_MILLIS = 1000 * 60 * 60 * 24;
     private static final int WEATHER_NOTIFICATION_ID = 3004;
 
 
-    private static final String[] NOTIFY_WEATHER_PROJECTION = new String[] {
+    private static final String[] NOTIFY_WEATHER_PROJECTION = new String[]{
             WeatherEntry.COLUMN_WEATHER_ID,
             WeatherEntry.COLUMN_MAX_TEMP,
             WeatherEntry.COLUMN_MIN_TEMP,
@@ -67,6 +65,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
     private static final int INDEX_MAX_TEMP = 1;
     private static final int INDEX_MIN_TEMP = 2;
     private static final int INDEX_SHORT_DESC = 3;
+    private WeatherService weatherService = null;
 
     public SunshineSyncAdapter(Context context, boolean autoInitialize) {
         super(context, autoInitialize);
@@ -78,11 +77,6 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
         // Getting the zipcode to send to the API
         String locationQuery = Utility.getPreferredLocation(getContext());
 
-        // These two need to be declared outside the try/catch
-        // so that they can be closed in the finally block.
-        HttpURLConnection urlConnection = null;
-        BufferedReader reader = null;
-
         // Will contain the raw JSON response as a string.
         String forecastJsonStr = null;
 
@@ -90,70 +84,26 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
         String units = "metric";
         int numDays = 14;
 
-        try {
-            // Construct the URL for the OpenWeatherMap query
-            // Possible parameters are avaiable at OWM's forecast API page, at
-            // http://openweathermap.org/API#forecast
-            final String FORECAST_BASE_URL =
-                    "http://api.openweathermap.org/data/2.5/forecast/daily?";
-            final String QUERY_PARAM = "q";
-            final String FORMAT_PARAM = "mode";
-            final String UNITS_PARAM = "units";
-            final String DAYS_PARAM = "cnt";
+        // Construct the URL for the OpenWeatherMap query
+        // Possible parameters are avaiable at OWM's forecast API page, at
+        // http://openweathermap.org/API#forecast
+        final String FORECAST_BASE_URL =
+                "http://api.openweathermap.org/data/2.5/forecast/daily";
 
-            Uri builtUri = Uri.parse(FORECAST_BASE_URL).buildUpon()
-                    .appendQueryParameter(QUERY_PARAM, locationQuery)
-                    .appendQueryParameter(FORMAT_PARAM, format)
-                    .appendQueryParameter(UNITS_PARAM, units)
-                    .appendQueryParameter(DAYS_PARAM, Integer.toString(numDays))
-                    .build();
-
-            URL url = new URL(builtUri.toString());
-
-            // Create the request to OpenWeatherMap, and open the connection
-            urlConnection = (HttpURLConnection) url.openConnection();
-            urlConnection.setRequestMethod("GET");
-            urlConnection.connect();
-
-            // Read the input stream into a String
-            InputStream inputStream = urlConnection.getInputStream();
-            StringBuffer buffer = new StringBuffer();
-            if (inputStream == null) {
-                // Nothing to do.
-                return;
-            }
-
-            reader = new BufferedReader(new InputStreamReader(inputStream));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                // Since it's JSON, adding a newline isn't necessary (it won't affect parsing)
-                // But it does make debugging a *lot* easier if you print out the completed
-                // buffer for debugging.
-                buffer.append(line + "\n");
-            }
-
-            if (buffer.length() == 0) {
-                // Stream was empty.  No point in parsing.
-                return;
-            }
-            forecastJsonStr = buffer.toString();
-        } catch (IOException e) {
-            Log.e(LOG_TAG, "Error ", e);
-            // If the code didn't successfully get the weather data, there's no point in attempting
-            // to parse it.
-            return;
-        } finally {
-            if (urlConnection != null) {
-                urlConnection.disconnect();
-            }
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (final IOException e) {
-                    Log.e(LOG_TAG, "Error closing stream", e);
-                }
-            }
+        if(weatherService == null) {
+            weatherService = new RestAdapter.Builder()
+                    .setEndpoint(FORECAST_BASE_URL)
+                    .setLogLevel(RestAdapter.LogLevel.FULL)
+                    .build()
+                    .create(WeatherService.class);
         }
+
+        Response response = weatherService.getForecast(locationQuery, format, units, Integer.toString(numDays));
+        TypedInput body = response.getBody();
+        if(body == null) {
+          return;
+        }
+        forecastJsonStr = new String(((TypedByteArray) body).getBytes());
 
         // Now we have a String representing the complete forecast in JSON Format.
         // Fortunately parsing is easy:  constructor takes the JSON string and converts it
@@ -204,7 +154,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
             // Insert the new weather information into the database
             Vector<ContentValues> cVVector = new Vector<ContentValues>(weatherArray.length());
 
-            for(int i = 0; i < weatherArray.length(); i++) {
+            for (int i = 0; i < weatherArray.length(); i++) {
                 // These are the values that will be collected.
 
                 long dateTime;
@@ -260,7 +210,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
 
                 cVVector.add(weatherValues);
             }
-            if ( cVVector.size() > 0 ) {
+            if (cVVector.size() > 0) {
                 ContentValues[] cvArray = new ContentValues[cVVector.size()];
                 cVVector.toArray(cvArray);
                 getContext().getContentResolver().bulkInsert(WeatherEntry.CONTENT_URI, cvArray);
@@ -270,7 +220,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
                 String yesterdayDate = WeatherContract.getDbDateString(cal.getTime());
                 getContext().getContentResolver().delete(WeatherEntry.CONTENT_URI,
                         WeatherEntry.COLUMN_DATETEXT + " <= ?",
-                        new String[] {yesterdayDate});
+                        new String[]{yesterdayDate});
 
                 notifyWeather();
             }
@@ -280,9 +230,6 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
             Log.e(LOG_TAG, e.getMessage(), e);
             e.printStackTrace();
         }
-
-        // This will only happen if there was an error getting or parsing the forecast.
-        return;
     }
 
 
@@ -294,7 +241,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
         boolean displayNotifications = prefs.getBoolean(displayNotificationsKey,
                 Boolean.parseBoolean(context.getString(R.string.pref_enable_notifications_default)));
 
-        if ( displayNotifications ) {
+        if (displayNotifications) {
 
             String lastNotificationKey = context.getString(R.string.pref_last_notification);
             long lastSync = prefs.getLong(lastNotificationKey, 0);
@@ -368,9 +315,9 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
      * Helper method to handle insertion of a new location in the weather database.
      *
      * @param locationSetting The location string used to request updates from the server.
-     * @param cityName A human-readable city name, e.g "Mountain View"
-     * @param lat the latitude of the city
-     * @param lon the longitude of the city
+     * @param cityName        A human-readable city name, e.g "Mountain View"
+     * @param lat             the latitude of the city
+     * @param lon             the longitude of the city
      * @return the row ID of the added location.
      */
     private long addLocation(String locationSetting, String cityName, double lat, double lon) {
@@ -437,6 +384,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
 
     /**
      * Helper method to have the sync adapter sync immediately
+     *
      * @param context The context used to access the account service
      */
     public static void syncImmediately(Context context) {
@@ -465,7 +413,7 @@ public class SunshineSyncAdapter extends AbstractThreadedSyncAdapter {
                 context.getString(R.string.app_name), context.getString(R.string.sync_account_type));
 
         // If the password doesn't exist, the account doesn't exist
-        if ( null == accountManager.getPassword(newAccount) ) {
+        if (null == accountManager.getPassword(newAccount)) {
 
         /*
          * Add the account and account type, no password or user data
